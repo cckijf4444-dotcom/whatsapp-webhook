@@ -1,6 +1,7 @@
 from flask import Flask, request, jsonify
 import os
 import requests
+import base64
 
 app = Flask(__name__)
 
@@ -11,81 +12,108 @@ VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "my_verify_token_123")
 ACCESS_TOKEN = os.environ.get("WHATSAPP_ACCESS_TOKEN")
 AZURE_API_KEY = os.environ.get("AZURE_API_KEY")
 HERMES_API_URL = os.environ.get("HERMES_API_URL")
+PLANT_ID_API_KEY = os.environ.get("PLANT_ID_API_KEY") # 新增 Plant.id 鑰匙
 
 # ==========================================
-# 🧠 第二棒：呼叫 Hermes Agent (Azure OpenAI 版)
+# 🧠 AI 區塊一：呼叫 Azure OpenAI (翻譯大腦)
 # ==========================================
 def process_with_hermes(input_text):
-    print(f"🧠 [Hermes Agent] 準備將資料送往 Azure OpenAI: {input_text}")
-    
+    print(f"🧠 [Azure大腦] 準備翻譯: {input_text}")
     try:
-        # 1. 準備 Azure 專用的 Headers (放鑰匙的地方)
         headers = {
             "Content-Type": "application/json",
             "api-key": AZURE_API_KEY
         }
-
-        # 2. 準備 OpenAI 專屬的對話格式
         payload = {
             "messages": [
-                {"role": "system", "content": "你是一個專業的阿美族語翻譯小幫手，請將使用者的話精準翻譯成阿美族語，並提供羅馬拼音。"},
+                {"role": "system", "content": "你是一個專業的阿美族語小幫手。如果使用者詢問植物，請提供該植物的阿美族語名稱與羅馬拼音，並做簡單的一句介紹。"},
                 {"role": "user", "content": input_text}
             ]
         }
-        
-        # 3. 發送請求給 Azure
         response = requests.post(HERMES_API_URL, headers=headers, json=payload)
-        
-        # 4. 拆解微軟回傳的複雜包裹
         if response.status_code == 200:
-            data = response.json()
-            # 從 OpenAI 複雜的 JSON 結構中精準挖出回覆內容
-            hermes_reply = data["choices"][0]["message"]["content"]
-            return hermes_reply
-            
+            return response.json()["choices"][0]["message"]["content"]
         else:
-            print(f"❌ Azure API 錯誤: {response.status_code} - {response.text}")
-            return "抱歉，微軟 AI 大腦暫時無法連線，請稍後再試！"
-            
+            return "抱歉，微軟 AI 大腦暫時無法連線！"
     except Exception as e:
-        print(f"❌ 呼叫 Azure 時發生異常: {e}")
-        return "抱歉，神經網路發生異常，請檢查連線！"
+        return f"微軟神經網路異常: {e}"
 
 # ==========================================
-# 📤 第三棒：發送訊息回 WhatsApp
+# 🌿 AI 區塊二：呼叫 Plant.id (視覺大腦)
+# ==========================================
+def identify_plant_with_plantid(image_bytes):
+    print("🌿 [Plant.id] 正在辨識植物特徵...")
+    url = "https://api.plant.id/v2/identify"
+    headers = {
+        "Api-Key": PLANT_ID_API_KEY,
+        "Content-Type": "application/json"
+    }
+    # 將二進位圖片轉成 Plant.id 規定的 Base64 字串
+    base64_image = base64.b64encode(image_bytes).decode('ascii')
+    payload = {
+        "images": [base64_image],
+        "plant_details": ["common_names"]
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("suggestions") and len(data["suggestions"]) > 0:
+                best_match = data["suggestions"][0]
+                # 嘗試抓取俗名，沒有的話就抓學名
+                names = best_match.get("plant_details", {}).get("common_names", [])
+                plant_name = names[0] if names else best_match.get("plant_name", "未知植物")
+                return plant_name
+        return None
+    except Exception as e:
+        print(f"❌ Plant.id 辨識失敗: {e}")
+        return None
+
+# ==========================================
+# 📥 實用工具：從 WhatsApp 下載真實圖片
+# ==========================================
+def download_whatsapp_image(media_id):
+    print(f"📥 [Meta 伺服器] 準備下載圖片 ID: {media_id}")
+    headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
+    
+    # 步驟 1：用 ID 換取真實網址
+    url_request = f"https://graph.facebook.com/v18.0/{media_id}"
+    res = requests.get(url_request, headers=headers)
+    if res.status_code == 200:
+        media_url = res.json().get('url')
+        
+        # 步驟 2：去真實網址下載圖片檔案
+        img_res = requests.get(media_url, headers=headers)
+        if img_res.status_code == 200:
+            print("✅ 圖片下載成功！")
+            return img_res.content
+    print("❌ 圖片下載失敗")
+    return None
+
+# ==========================================
+# 📤 發送訊息回 WhatsApp
 # ==========================================
 def send_whatsapp_reply(phone_number_id, recipient_number, reply_text):
     url = f"https://graph.facebook.com/v18.0/{phone_number_id}/messages"
-    
     headers = {
         "Authorization": f"Bearer {ACCESS_TOKEN}",
         "Content-Type": "application/json"
     }
-    
     payload = {
         "messaging_product": "whatsapp",
         "to": recipient_number,
         "type": "text",
-        "text": {
-            "body": reply_text
-        }
+        "text": {"body": reply_text}
     }
-    
-    print(f"📤 準備發送回覆給 {recipient_number}...")
-    response = requests.post(url, headers=headers, json=payload)
-    
-    if response.status_code == 200:
-        print("✅ 成功回傳訊息給使用者！")
-    else:
-        print(f"❌ 回傳失敗，錯誤碼：{response.status_code}")
-        print(f"錯誤詳情：{response.text}")
+    requests.post(url, headers=headers, json=payload)
 
 # ==========================================
-# 📥 第一棒：Webhook 接收端點
+# 🚀 Webhook 核心控制器
 # ==========================================
 @app.route('/')
 def home():
-    return "Amis Bot Webhook is running perfectly!"
+    return "Amis Bot Webhook with Vision is running!"
 
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
@@ -93,21 +121,17 @@ def webhook():
         mode = request.args.get('hub.mode')
         token = request.args.get('hub.verify_token')
         challenge = request.args.get('hub.challenge')
-        
         if mode == 'subscribe' and token == VERIFY_TOKEN:
             return challenge, 200
-        else:
-            return "Verification failed", 403
+        return "Verification failed", 403
     
     elif request.method == 'POST':
         data = request.get_json()
-        
         try:
             if data.get('object') == 'whatsapp_business_account':
                 for entry in data.get('entry', []):
                     for change in entry.get('changes', []):
                         value = change.get('value', {})
-                        
                         phone_number_id = value.get('metadata', {}).get('phone_number_id')
                         
                         if 'messages' in value:
@@ -115,23 +139,40 @@ def webhook():
                                 from_number = message.get('from')
                                 msg_type = message.get('type')
                                 
+                                # 處理純文字
                                 if msg_type == 'text':
                                     text = message['text']['body']
-                                    print(f"💬 收到 {from_number} 的文字訊息: {text}")
-                                    
-                                    # 觸發 Azure 大腦
                                     final_answer = process_with_hermes(text)
-                                    
-                                    if phone_number_id and from_number:
-                                        send_whatsapp_reply(phone_number_id, from_number, final_answer)
+                                    send_whatsapp_reply(phone_number_id, from_number, final_answer)
                                         
+                                # 處理圖片：進入完美流水線
                                 elif msg_type == 'image':
-                                    reply = "收到圖片了！目前仍在開發影像辨識功能中..."
-                                    if phone_number_id and from_number:
-                                        send_whatsapp_reply(phone_number_id, from_number, reply)
+                                    image_id = message['image']['id']
+                                    
+                                    # 1. 告訴使用者已收到
+                                    send_whatsapp_reply(phone_number_id, from_number, "📸 收到照片了！正在請 Plant.id 辨識植物特徵...")
+                                    
+                                    # 2. 下載圖片
+                                    image_bytes = download_whatsapp_image(image_id)
+                                    
+                                    if image_bytes:
+                                        # 3. 交給 Plant.id 辨識
+                                        plant_name = identify_plant_with_plantid(image_bytes)
+                                        
+                                        if plant_name:
+                                            send_whatsapp_reply(phone_number_id, from_number, f"🌿 視覺辨識結果：這可能是「{plant_name}」。\n正在請微軟大腦翻譯成阿美語...")
+                                            
+                                            # 4. 辨識成功，把植物名稱丟給 Azure 大腦翻譯
+                                            prompt = f"使用者上傳了一張植物照片，系統辨識出它是「{plant_name}」。請告訴我它的阿美語怎麼說，並做簡單介紹。"
+                                            final_translation = process_with_hermes(prompt)
+                                            send_whatsapp_reply(phone_number_id, from_number, final_translation)
+                                        else:
+                                            send_whatsapp_reply(phone_number_id, from_number, "抱歉，Plant.id 視覺大腦看不出這是什麼植物。")
+                                    else:
+                                        send_whatsapp_reply(phone_number_id, from_number, "⚠️ 從系統下載照片失敗，請再傳一次。")
                                         
         except Exception as e:
-            print(f"❌ 處理訊息時發生錯誤: {e}")
+            print(f"❌ 嚴重錯誤: {e}")
         
         return jsonify({"status": "ok"}), 200
 

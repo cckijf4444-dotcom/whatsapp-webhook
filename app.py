@@ -63,10 +63,12 @@ def identify_plant_with_plantid(image_bytes):
     
     # 將圖片轉換成 Base64 格式
     base64_image = base64.b64encode(image_bytes).decode('ascii')
+    
+    # 🔥 這裡完美加入了要求回傳「繁體中文」的設定
     payload = {
         "images": [base64_image],
-        "plant_details": ["common_names"]
-        "language": "zh"
+        "plant_details": ["common_names"],
+        "language": "zh-tw"
     }
     
     try:

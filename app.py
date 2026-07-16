@@ -66,7 +66,7 @@ def identify_plant_with_plantid(image_bytes):
     payload = {
         "images": [base64_image],
         "plant_details": ["common_names"]
-        "language": "zh-tw"
+        "language": "zh"
     }
     
     try:

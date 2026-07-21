@@ -2,6 +2,7 @@ from flask import Flask, request, jsonify
 import os
 import requests
 import base64
+import threading  # 🔥 新增：用來處理背景任務的套件
 
 app = Flask(__name__)
 
@@ -140,11 +141,73 @@ def send_whatsapp_audio(phone_number_id, recipient_number, audio_link):
         print(f"❌ 語音回傳失敗，錯誤碼：{response.status_code}")
 
 # ==========================================
+# ⚙️ 專門負責耗時工作的「背景小幫手」
+# ==========================================
+def background_processor(value):
+    phone_number_id = value.get('metadata', {}).get('phone_number_id')
+    
+    if 'messages' in value:
+        for message in value['messages']:
+            from_number = message.get('from')
+            msg_type = message.get('type')
+            
+            try:
+                # --------------------------
+                # 💬 處理純文字
+                # --------------------------
+                if msg_type == 'text':
+                    text = message['text']['body']
+                    print(f"💬 收到文字訊息: {text}")
+                    
+                    # 丟給朋友的 HERMES 處理
+                    reply_text, audio_url = process_with_hermes(text)
+                    
+                    # 回傳文字
+                    if phone_number_id and from_number:
+                        send_whatsapp_reply(phone_number_id, from_number, reply_text)
+                        # 如果朋友有傳回語音網址，就加碼回傳語音
+                        if audio_url:
+                            send_whatsapp_audio(phone_number_id, from_number, audio_url)
+                        
+                # --------------------------
+                # 📸 處理圖片
+                # --------------------------
+                elif msg_type == 'image':
+                    image_id = message['image']['id']
+                    
+                    # 1. 告訴使用者已收到
+                    send_whatsapp_reply(phone_number_id, from_number, "📸 收到照片了！正在辨識植物與查詢阿美語...")
+                    
+                    # 2. 下載圖片
+                    image_bytes = download_whatsapp_image(image_id)
+                    
+                    if image_bytes:
+                        # 3. 交給 Plant.id 辨識
+                        plant_name = identify_plant_with_plantid(image_bytes)
+                        
+                        if plant_name:
+                            # 4. 把植物名稱丟給朋友的 HERMES 找資料庫與語音
+                            prompt = f"照片辨識結果為：{plant_name}"
+                            reply_text, audio_url = process_with_hermes(prompt)
+                            
+                            # 5. 回傳最終結果
+                            send_whatsapp_reply(phone_number_id, from_number, reply_text)
+                            if audio_url:
+                                send_whatsapp_audio(phone_number_id, from_number, audio_url)
+                        else:
+                            send_whatsapp_reply(phone_number_id, from_number, "抱歉，Plant.id 視覺大腦看不出這是什麼植物。")
+                    else:
+                        send_whatsapp_reply(phone_number_id, from_number, "⚠️ 從系統下載照片失敗，請再傳一次。")
+                        
+            except Exception as e:
+                print(f"❌ 背景處理發生錯誤: {e}")
+
+# ==========================================
 # 🚀 Webhook 核心控制器
 # ==========================================
 @app.route('/')
 def home():
-    return "Amis Bot Webhook is running perfectly! (Connected to Ngrok HERMES)"
+    return "Amis Bot Webhook is running perfectly! (Async Mode Connected to Ngrok HERMES)"
 
 @app.route('/webhook', methods=['GET', 'POST'])
 def webhook():
@@ -163,63 +226,15 @@ def webhook():
                 for entry in data.get('entry', []):
                     for change in entry.get('changes', []):
                         value = change.get('value', {})
-                        phone_number_id = value.get('metadata', {}).get('phone_number_id')
                         
-                        if 'messages' in value:
-                            for message in value['messages']:
-                                from_number = message.get('from')
-                                msg_type = message.get('type')
-                                
-                                # --------------------------
-                                # 💬 處理純文字
-                                # --------------------------
-                                if msg_type == 'text':
-                                    text = message['text']['body']
-                                    print(f"💬 收到文字訊息: {text}")
-                                    
-                                    # 丟給朋友的 HERMES 處理
-                                    reply_text, audio_url = process_with_hermes(text)
-                                    
-                                    # 回傳文字
-                                    if phone_number_id and from_number:
-                                        send_whatsapp_reply(phone_number_id, from_number, reply_text)
-                                        # 如果朋友有傳回語音網址，就加碼回傳語音
-                                        if audio_url:
-                                            send_whatsapp_audio(phone_number_id, from_number, audio_url)
-                                        
-                                # --------------------------
-                                # 📸 處理圖片
-                                # --------------------------
-                                elif msg_type == 'image':
-                                    image_id = message['image']['id']
-                                    
-                                    # 1. 告訴使用者已收到
-                                    send_whatsapp_reply(phone_number_id, from_number, "📸 收到照片了！正在辨識植物與查詢阿美語...")
-                                    
-                                    # 2. 下載圖片
-                                    image_bytes = download_whatsapp_image(image_id)
-                                    
-                                    if image_bytes:
-                                        # 3. 交給 Plant.id 辨識
-                                        plant_name = identify_plant_with_plantid(image_bytes)
-                                        
-                                        if plant_name:
-                                            # 4. 把植物名稱丟給朋友的 HERMES 找資料庫與語音
-                                            prompt = f"照片辨識結果為：{plant_name}"
-                                            reply_text, audio_url = process_with_hermes(prompt)
-                                            
-                                            # 5. 回傳最終結果
-                                            send_whatsapp_reply(phone_number_id, from_number, reply_text)
-                                            if audio_url:
-                                                send_whatsapp_audio(phone_number_id, from_number, audio_url)
-                                        else:
-                                            send_whatsapp_reply(phone_number_id, from_number, "抱歉，Plant.id 視覺大腦看不出這是什麼植物。")
-                                    else:
-                                        send_whatsapp_reply(phone_number_id, from_number, "⚠️ 從系統下載照片失敗，請再傳一次。")
-                                        
+                        # 🔥 關鍵修改：啟動背景執行緒去處理訊息，主程式不等待！
+                        thread = threading.Thread(target=background_processor, args=(value,))
+                        thread.start()
+                        
         except Exception as e:
-            print(f"❌ 處理訊息時發生嚴重錯誤: {e}")
+            print(f"❌ 接收訊息錯誤: {e}")
         
+        # 🔥 不管背景任務做多久，馬上回傳 200 OK 讓 Meta 停止重發
         return jsonify({"status": "ok"}), 200
 
 if __name__ == '__main__':

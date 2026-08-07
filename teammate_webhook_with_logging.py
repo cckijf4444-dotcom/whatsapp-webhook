@@ -1,20 +1,10 @@
 from flask import Flask, request, jsonify
 import os
+import re
 import requests
 import base64
 import threading
 import hashlib
-import builtins
-import traceback
-
-# ==========================================
-# 🔧 系統優化：強制讓所有 print 立刻推送到 Render 日誌
-# ==========================================
-_original_print = builtins.print
-def print(*args, **kwargs):
-    kwargs["flush"] = True
-    _original_print(*args, **kwargs)
-builtins.print = print
 
 app = Flask(__name__)
 
@@ -28,6 +18,13 @@ PLANT_ID_API_KEY = os.environ.get("PLANT_ID_API_KEY")
 
 REQUEST_TIMEOUT = int(os.environ.get("REQUEST_TIMEOUT", "30"))
 PLANT_ID_TIMEOUT = int(os.environ.get("PLANT_ID_TIMEOUT", str(REQUEST_TIMEOUT)))
+FORWARDED_HERMES_TIMEOUT = int(os.environ.get("HERMES_TIMEOUT", "180"))
+HERMES_API_TIMEOUT = int(
+    os.environ.get(
+        "HERMES_API_TIMEOUT",
+        str(max(FORWARDED_HERMES_TIMEOUT + 60, 120)),
+    )
+)
 
 
 # ==========================================
@@ -51,6 +48,64 @@ def safe_response_text(response, limit=2000):
     return text
 
 
+
+def _extract_reply_field(reply_text, label):
+    pattern = rf"^\s*-?\s*{re.escape(label)}\s*[：:]\s*(.+?)\s*$"
+    match = re.search(pattern, str(reply_text or ""), flags=re.MULTILINE)
+    if not match:
+        return ""
+    return match.group(1).strip()
+
+
+
+def build_glasses_readout_text(reply_text):
+    plant_name = (
+        _extract_reply_field(reply_text, "辨識結果")
+        or _extract_reply_field(reply_text, "中文名")
+    )
+    amis_name = (
+        _extract_reply_field(reply_text, "阿美族語名")
+        or _extract_reply_field(reply_text, "阿美語名")
+        or _extract_reply_field(reply_text, "阿美族語")
+        or _extract_reply_field(reply_text, "阿美語")
+    )
+    tts_text = (
+        _extract_reply_field(reply_text, "TTS 文字")
+        or _extract_reply_field(reply_text, "TTS 拼音")
+        or _extract_reply_field(reply_text, "TTS拼音")
+        or _extract_reply_field(reply_text, "阿美族語發音")
+        or _extract_reply_field(reply_text, "阿美語發音")
+    )
+    spoken_tts = re.sub(r"\s*,\s*", " ", tts_text).strip()
+
+    segments = []
+    if plant_name:
+        segments.append(f"這是{plant_name}。")
+    if amis_name:
+        segments.append(f"阿美族語是{amis_name}。")
+    if spoken_tts:
+        segments.append(f"發音是{spoken_tts}。")
+
+    summary = "".join(segments).strip()
+    if not summary:
+        return ""
+
+    if len(summary) > 120:
+        summary = summary[:117].rstrip() + "..."
+    return summary
+
+
+
+def send_whatsapp_glasses_readout(phone_number_id, recipient_number, reply_text):
+    short_text = build_glasses_readout_text(reply_text)
+    if not short_text:
+        print("ℹ️ [WA glasses] 無可用短文字，略過發送")
+        return
+
+    print(f"🕶️ [WA glasses] short_text={short_text}")
+    send_whatsapp_reply(phone_number_id, recipient_number, short_text)
+
+
 # ==========================================
 # 🧠 大腦區塊：呼叫朋友的 HERMES (Ngrok / Render)
 # ==========================================
@@ -63,50 +118,42 @@ def process_with_hermes(input_text, chat_id=None):
     payload = {
         "message": input_text,
         "text": input_text,
+        "hermes_timeout": FORWARDED_HERMES_TIMEOUT,
     }
     if chat_id:
         payload["chatId"] = chat_id
 
     try:
         print(f"🧾 [HERMES] POST {HERMES_API_URL}")
+        print(f"🧾 [HERMES] forwarded_timeout={FORWARDED_HERMES_TIMEOUT}")
+        print(f"🧾 [HERMES] api_timeout={HERMES_API_TIMEOUT}")
         print(f"🧾 [HERMES] payload={payload}")
 
         response = requests.post(
             HERMES_API_URL,
             json=payload,
-            timeout=REQUEST_TIMEOUT,
+            timeout=HERMES_API_TIMEOUT,
         )
-        
-        # 取得 HERMES 回傳的原始文字
-        raw_body = safe_response_text(response)
+
         print(f"🧾 [HERMES] status={response.status_code}")
-        print(f"🧾 [HERMES] body={raw_body}")
+        print(f"🧾 [HERMES] body={safe_response_text(response)}")
 
         if response.status_code == 200:
             data = response.json()
-            reply_text = data.get("reply_text") or data.get("message")
-            
-            # 如果 HERMES 雖然回傳 200，但內容是空白的，把原始結果印在 WhatsApp 方便除錯
-            if not reply_text:
-                error_msg = (
-                    "⚠️ 收到 HERMES 空白回覆\n"
-                    f"👉 HERMES 原始資料：\n{raw_body}"
-                )
-                return error_msg, None
-                
+            reply_text = data.get("reply_text") or data.get("message") or "抱歉，無法解析 HERMES 回傳的文字。"
             audio_url = data.get("audio_url")
             return reply_text, audio_url
 
-        # 如果發生 500 等錯誤，直接把錯誤碼跟原始資料丟到 WhatsApp
-        error_msg = (
-            f"❌ HERMES 連線錯誤 (狀態碼: {response.status_code})\n"
-            f"👉 錯誤內容：\n{raw_body}"
-        )
-        return error_msg, None
+        return f"❌ HERMES 連線錯誤 (狀態碼: {response.status_code})", None
 
     except requests.exceptions.Timeout:
-        print("❌ [HERMES] 請求逾時")
-        return "❌ 呼叫 HERMES 逾時 (已超過等待時間)", None
+        print(
+            f"❌ [HERMES] 請求逾時 api_timeout={HERMES_API_TIMEOUT} forwarded_timeout={FORWARDED_HERMES_TIMEOUT}"
+        )
+        return (
+            f"❌ 呼叫 HERMES 逾時（外層等待 {HERMES_API_TIMEOUT} 秒，內層 Hermes {FORWARDED_HERMES_TIMEOUT} 秒）",
+            None,
+        )
     except Exception as e:
         print(f"❌ [HERMES] 呼叫異常: {e}")
         return f"❌ 呼叫 HERMES 發生異常: {e}", None
@@ -155,7 +202,7 @@ def identify_plant_with_plantid(image_bytes):
     last_status_code = None
     last_error_code = "unknown"
 
-    # 優先走 v3 介面
+    # 優先走 Twilio 目前在用的 v3 介面
     v3_url = "https://plant.id/api/v3/identification"
     v3_headers = {
         "Api-Key": PLANT_ID_API_KEY,
@@ -458,6 +505,7 @@ def background_processor(value):
                     reply_text, audio_url = process_with_hermes(prompt, from_number)
 
                     if phone_number_id and from_number:
+                        send_whatsapp_glasses_readout(phone_number_id, from_number, reply_text)
                         send_whatsapp_reply(phone_number_id, from_number, reply_text)
                         if audio_url:
                             send_whatsapp_audio(phone_number_id, from_number, audio_url)
@@ -466,7 +514,6 @@ def background_processor(value):
 
             except Exception as e:
                 print(f"❌ 背景處理發生錯誤: {e}")
-                traceback.print_exc()
 
 
 # ==========================================
@@ -488,6 +535,8 @@ def health():
             "plant_id_api_key_configured": bool(PLANT_ID_API_KEY),
             "request_timeout": REQUEST_TIMEOUT,
             "plant_id_timeout": PLANT_ID_TIMEOUT,
+            "forwarded_hermes_timeout": FORWARDED_HERMES_TIMEOUT,
+            "hermes_api_timeout": HERMES_API_TIMEOUT,
         }
     ), 200
 
@@ -519,7 +568,6 @@ def webhook():
 
         except Exception as e:
             print(f"❌ 接收訊息錯誤: {e}")
-            traceback.print_exc()
 
         return jsonify({"status": "ok"}), 200
 

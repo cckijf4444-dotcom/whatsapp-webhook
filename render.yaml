@@ -1,62 +1,59 @@
 services:
-  
-type: web
-  name: hermes-bridge
-  env: python
-  buildCommand: |
-    curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
-    export PATH="$HOME/.local/bin:$PATH"
-    pip install -r requirements.txt
-  startCommand: |
-    export PATH="$HOME/.local/bin:$PATH"
-    mkdir -p /tmp/hermes-bridge-cwd
-    gunicorn teammate_webhook_with_logging:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 180
-  envVars:
-key: PYTHON_VERSION
-    value: 3.11.9
-key: VERIFY_TOKEN
-  sync: false
-key: WHATSAPP_ACCESS_TOKEN
-sync: false
-key: HERMES_API_URL
-sync: false
-key: PLANT_ID_API_KEY
-sync: false
-key: REQUEST_TIMEOUT
-value: 30
-key: HERMES_API_TIMEOUT
-value: 240
-key: PLANT_ID_TIMEOUT
-value: 90
-key: HERMES_TIMEOUT
-value: 180
-key: HERMES_WORKDIR
-value: /tmp/hermes-bridge-cwd
-key: HERMES_PROVIDER
-sync: false
-key: HERMES_MODEL
-sync: false
-key: HERMES_PROFILE
-sync: false
-key: HERMES_TOOLSETS
-sync: false
-key: HERMES_EXTRA_ARGS
-sync: false
-key: OPENROUTER_API_KEY
-sync: false
-key: AZURE_SPEECH_KEY
-sync: false
-key: AZURE_SPEECH_REGION
-sync: false
-key: PUBLIC_BASE_URL
-sync: false
-key: TTS_VOICE
-value: id-ID-GadisNeural
-key: TTS_OUTPUT_FORMAT
-value: ogg-24khz-16bit-mono-opus
-key: TTS_TIMEOUT
-value: 30
-key: TTS_TEXT_MAX_CHARS
-value: 300
-key: AUDIO_TTL_SECONDS
-value: 21600
+  - type: web
+    name: hermes-bridge
+    env: python
+    buildCommand: |
+      curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+      export PATH="$HOME/.local/bin:$PATH"
+      pip install -r requirements.txt
+    startCommand: |
+      export PATH="$HOME/.local/bin:$PATH"
+      mkdir -p /tmp/hermes-bridge-cwd
+      gunicorn teammate_webhook_with_logging:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 180
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: VERIFY_TOKEN
+        sync: false
+      - key: WHATSAPP_ACCESS_TOKEN
+        sync: false
+      - key: HERMES_API_URL
+        sync: false
+      - key: PLANT_ID_API_KEY
+        sync: false
+      - key: REQUEST_TIMEOUT
+        value: 30
+      - key: PLANT_ID_TIMEOUT
+        value: 90
+      - key: HERMES_TIMEOUT
+        value: 75
+      - key: HERMES_WORKDIR
+        value: /tmp/hermes-bridge-cwd
+      - key: HERMES_PROVIDER
+        sync: false
+      - key: HERMES_MODEL
+        sync: false
+      - key: HERMES_PROFILE
+        sync: false
+      - key: HERMES_TOOLSETS
+        sync: false
+      - key: HERMES_EXTRA_ARGS
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: AZURE_SPEECH_KEY
+        sync: false
+      - key: AZURE_SPEECH_REGION
+        sync: false
+      - key: PUBLIC_BASE_URL
+        sync: false
+      - key: TTS_VOICE
+        value: id-ID-GadisNeural
+      - key: TTS_OUTPUT_FORMAT
+        value: ogg-24khz-16bit-mono-opus
+      - key: TTS_TIMEOUT
+        value: 30
+      - key: TTS_TEXT_MAX_CHARS
+        value: 300
+      - key: AUDIO_TTL_SECONDS
+        value: 21600

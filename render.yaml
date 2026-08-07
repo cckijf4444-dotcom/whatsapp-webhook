@@ -22,9 +22,9 @@ services:
       - key: PLANT_ID_API_KEY
         sync: false
       - key: REQUEST_TIMEOUT
-        value: 30
-      - key: PLANT_ID_TIMEOUT
         value: 90
+      - key: PLANT_ID_TIMEOUT
+        value: 180
       - key: HERMES_TIMEOUT
         value: 75
       - key: HERMES_WORKDIR

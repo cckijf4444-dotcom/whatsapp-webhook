@@ -23,10 +23,12 @@ services:
         sync: false
       - key: REQUEST_TIMEOUT
         value: 30
+      - key: HERMES_API_TIMEOUT
+        value: 240
       - key: PLANT_ID_TIMEOUT
         value: 90
       - key: HERMES_TIMEOUT
-        value: 75
+        value: 180
       - key: HERMES_WORKDIR
         value: /tmp/hermes-bridge-cwd
       - key: HERMES_PROVIDER

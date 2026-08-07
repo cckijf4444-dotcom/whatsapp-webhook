@@ -5,6 +5,17 @@ import requests
 import base64
 import threading
 import hashlib
+import builtins
+import traceback
+
+# ==========================================
+# 🔧 系統優化：強制讓所有 print 立刻推送到 Render 日誌
+# ==========================================
+_original_print = builtins.print
+def print(*args, **kwargs):
+    kwargs["flush"] = True
+    _original_print(*args, **kwargs)
+builtins.print = print
 
 app = Flask(__name__)
 
@@ -48,14 +59,12 @@ def safe_response_text(response, limit=2000):
     return text
 
 
-
 def _extract_reply_field(reply_text, label):
     pattern = rf"^\s*-?\s*{re.escape(label)}\s*[：:]\s*(.+?)\s*$"
     match = re.search(pattern, str(reply_text or ""), flags=re.MULTILINE)
     if not match:
         return ""
     return match.group(1).strip()
-
 
 
 def build_glasses_readout_text(reply_text):
@@ -94,6 +103,73 @@ def build_glasses_readout_text(reply_text):
         summary = summary[:117].rstrip() + "..."
     return summary
 
+
+# ==========================================
+# 📤 發送訊息回 WhatsApp (文字與語音模組)
+# ==========================================
+def send_whatsapp_reply(phone_number_id, recipient_number, reply_text):
+    if not reply_text:
+        print("ℹ️ [WA text] reply_text 為空，略過發送")
+        return
+
+    if not ACCESS_TOKEN:
+        print("⚠️ 尚未設定 WHATSAPP_ACCESS_TOKEN，無法發送文字")
+        return
+
+    url = f"https://graph.facebook.com/v18.0/{phone_number_id}/messages"
+    headers = {
+        "Authorization": f"Bearer {ACCESS_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": recipient_number,
+        "type": "text",
+        "text": {"body": reply_text}
+    }
+
+    print(f"📤 [WA text] POST {url}")
+    print(f"📤 [WA text] payload={payload}")
+
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=REQUEST_TIMEOUT)
+        print(f"📤 [WA text] status={response.status_code}")
+        print(f"📤 [WA text] body={safe_response_text(response)}")
+    except Exception as e:
+        print(f"❌ [WA text] 發送失敗: {e}")
+
+
+def send_whatsapp_audio(phone_number_id, recipient_number, audio_link):
+    if not ACCESS_TOKEN:
+        print("⚠️ 尚未設定 WHATSAPP_ACCESS_TOKEN，無法發送語音")
+        return
+
+    url = f"https://graph.facebook.com/v18.0/{phone_number_id}/messages"
+    headers = {
+        "Authorization": f"Bearer {ACCESS_TOKEN}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": recipient_number,
+        "type": "audio",
+        "audio": {"link": audio_link}
+    }
+
+    print(f"🎵 [WA audio] 準備發送語音給 {recipient_number}")
+    print(f"🎵 [WA audio] audio_link={audio_link}")
+    print(f"🎵 [WA audio] payload={payload}")
+
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=REQUEST_TIMEOUT)
+        print(f"📤 [WA audio] status={response.status_code}")
+        print(f"📤 [WA audio] body={safe_response_text(response)}")
+        if response.status_code == 200:
+            print("✅ 成功回傳語音給使用者！")
+        else:
+            print(f"❌ 語音回傳失敗，錯誤碼：{response.status_code}")
+    except Exception as e:
+        print(f"❌ [WA audio] 發送失敗: {e}")
 
 
 def send_whatsapp_glasses_readout(phone_number_id, recipient_number, reply_text):
@@ -135,16 +211,32 @@ def process_with_hermes(input_text, chat_id=None):
             timeout=HERMES_API_TIMEOUT,
         )
 
+        # 取得 HERMES 回傳的原始文字 (除錯用)
+        raw_body = safe_response_text(response)
         print(f"🧾 [HERMES] status={response.status_code}")
-        print(f"🧾 [HERMES] body={safe_response_text(response)}")
+        print(f"🧾 [HERMES] body={raw_body}")
 
         if response.status_code == 200:
             data = response.json()
-            reply_text = data.get("reply_text") or data.get("message") or "抱歉，無法解析 HERMES 回傳的文字。"
+            reply_text = data.get("reply_text") or data.get("message")
+            
+            # 如果 HERMES 雖然回傳 200，但內容是空白的，把原始結果印在 WhatsApp 方便除錯
+            if not reply_text:
+                error_msg = (
+                    "⚠️ 收到 HERMES 空白回覆\n"
+                    f"👉 HERMES 原始資料：\n{raw_body}"
+                )
+                return error_msg, None
+                
             audio_url = data.get("audio_url")
             return reply_text, audio_url
 
-        return f"❌ HERMES 連線錯誤 (狀態碼: {response.status_code})", None
+        # 如果發生 500 等錯誤，直接把錯誤碼跟原始資料丟到 WhatsApp
+        error_msg = (
+            f"❌ HERMES 連線錯誤 (狀態碼: {response.status_code})\n"
+            f"👉 錯誤內容：\n{raw_body}"
+        )
+        return error_msg, None
 
     except requests.exceptions.Timeout:
         print(
@@ -379,74 +471,6 @@ def download_whatsapp_image(media_id):
 
 
 # ==========================================
-# 📤 發送訊息回 WhatsApp (文字與語音模組)
-# ==========================================
-def send_whatsapp_reply(phone_number_id, recipient_number, reply_text):
-    if not reply_text:
-        print("ℹ️ [WA text] reply_text 為空，略過發送")
-        return
-
-    if not ACCESS_TOKEN:
-        print("⚠️ 尚未設定 WHATSAPP_ACCESS_TOKEN，無法發送文字")
-        return
-
-    url = f"https://graph.facebook.com/v18.0/{phone_number_id}/messages"
-    headers = {
-        "Authorization": f"Bearer {ACCESS_TOKEN}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": recipient_number,
-        "type": "text",
-        "text": {"body": reply_text}
-    }
-
-    print(f"📤 [WA text] POST {url}")
-    print(f"📤 [WA text] payload={payload}")
-
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=REQUEST_TIMEOUT)
-        print(f"📤 [WA text] status={response.status_code}")
-        print(f"📤 [WA text] body={safe_response_text(response)}")
-    except Exception as e:
-        print(f"❌ [WA text] 發送失敗: {e}")
-
-
-def send_whatsapp_audio(phone_number_id, recipient_number, audio_link):
-    if not ACCESS_TOKEN:
-        print("⚠️ 尚未設定 WHATSAPP_ACCESS_TOKEN，無法發送語音")
-        return
-
-    url = f"https://graph.facebook.com/v18.0/{phone_number_id}/messages"
-    headers = {
-        "Authorization": f"Bearer {ACCESS_TOKEN}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": recipient_number,
-        "type": "audio",
-        "audio": {"link": audio_link}
-    }
-
-    print(f"🎵 [WA audio] 準備發送語音給 {recipient_number}")
-    print(f"🎵 [WA audio] audio_link={audio_link}")
-    print(f"🎵 [WA audio] payload={payload}")
-
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=REQUEST_TIMEOUT)
-        print(f"📤 [WA audio] status={response.status_code}")
-        print(f"📤 [WA audio] body={safe_response_text(response)}")
-        if response.status_code == 200:
-            print("✅ 成功回傳語音給使用者！")
-        else:
-            print(f"❌ 語音回傳失敗，錯誤碼：{response.status_code}")
-    except Exception as e:
-        print(f"❌ [WA audio] 發送失敗: {e}")
-
-
-# ==========================================
 # ⚙️ 專門負責耗時工作的背景處理器
 # ==========================================
 def background_processor(value):
@@ -514,6 +538,7 @@ def background_processor(value):
 
             except Exception as e:
                 print(f"❌ 背景處理發生錯誤: {e}")
+                traceback.print_exc()
 
 
 # ==========================================
@@ -568,6 +593,7 @@ def webhook():
 
         except Exception as e:
             print(f"❌ 接收訊息錯誤: {e}")
+            traceback.print_exc()
 
         return jsonify({"status": "ok"}), 200
 

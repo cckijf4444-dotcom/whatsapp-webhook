@@ -4,17 +4,6 @@ import requests
 import base64
 import threading
 import hashlib
-import builtins
-import traceback
-
-# ==========================================
-# 🔧 系統優化：強制讓所有 print 立刻推送到 Render 日誌
-# ==========================================
-_original_print = builtins.print
-def print(*args, **kwargs):
-    kwargs["flush"] = True
-    _original_print(*args, **kwargs)
-builtins.print = print
 
 app = Flask(__name__)
 
@@ -58,7 +47,6 @@ def process_with_hermes(input_text, chat_id=None):
     print(f"🧠 [HERMES] 準備將資料送往朋友的服務: {input_text}")
 
     if not HERMES_API_URL:
-        print("❌ [HERMES] 尚未設定 HERMES_API_URL 環境變數")
         return "⚠️ 尚未設定 HERMES_API_URL (朋友的服務網址)", None
 
     payload = {
@@ -86,16 +74,14 @@ def process_with_hermes(input_text, chat_id=None):
             reply_text = data.get("reply_text") or data.get("message") or "抱歉，無法解析 HERMES 回傳的文字。"
             audio_url = data.get("audio_url")
             return reply_text, audio_url
-        else:
-            print(f"❌ [HERMES] 連線錯誤！伺服器回傳狀態碼: {response.status_code}")
-            return f"❌ HERMES 連線錯誤 (狀態碼: {response.status_code})", None
+
+        return f"❌ HERMES 連線錯誤 (狀態碼: {response.status_code})", None
 
     except requests.exceptions.Timeout:
         print("❌ [HERMES] 請求逾時")
         return "❌ 呼叫 HERMES 逾時", None
     except Exception as e:
         print(f"❌ [HERMES] 呼叫異常: {e}")
-        traceback.print_exc()
         return f"❌ 呼叫 HERMES 發生異常: {e}", None
 
 
@@ -309,7 +295,6 @@ def download_whatsapp_image(media_id):
 
     except Exception as e:
         print(f"❌ [Meta] 圖片下載失敗: {e}")
-        traceback.print_exc()
 
     print("❌ 圖片下載失敗")
     return {
@@ -328,7 +313,7 @@ def send_whatsapp_reply(phone_number_id, recipient_number, reply_text):
         return
 
     if not ACCESS_TOKEN:
-        print("⚠️ [WA text] 尚未設定 WHATSAPP_ACCESS_TOKEN，無法發送文字")
+        print("⚠️ 尚未設定 WHATSAPP_ACCESS_TOKEN，無法發送文字")
         return
 
     url = f"https://graph.facebook.com/v18.0/{phone_number_id}/messages"
@@ -343,27 +328,20 @@ def send_whatsapp_reply(phone_number_id, recipient_number, reply_text):
         "text": {"body": reply_text}
     }
 
-    print(f"📤 [WA text] 準備發送至 {recipient_number}，POST {url}")
+    print(f"📤 [WA text] POST {url}")
     print(f"📤 [WA text] payload={payload}")
 
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=REQUEST_TIMEOUT)
         print(f"📤 [WA text] status={response.status_code}")
         print(f"📤 [WA text] body={safe_response_text(response)}")
-        
-        if response.status_code != 200:
-            print(f"❌ [WA text] 嚴重警告：發送文字給 WhatsApp 失敗！狀態碼：{response.status_code}")
-        else:
-            print(f"✅ [WA text] 成功傳送文字給使用者！")
-            
     except Exception as e:
-        print(f"❌ [WA text] 發送過程發生異常: {e}")
-        traceback.print_exc()
+        print(f"❌ [WA text] 發送失敗: {e}")
 
 
 def send_whatsapp_audio(phone_number_id, recipient_number, audio_link):
     if not ACCESS_TOKEN:
-        print("⚠️ [WA audio] 尚未設定 WHATSAPP_ACCESS_TOKEN，無法發送語音")
+        print("⚠️ 尚未設定 WHATSAPP_ACCESS_TOKEN，無法發送語音")
         return
 
     url = f"https://graph.facebook.com/v18.0/{phone_number_id}/messages"
@@ -387,28 +365,27 @@ def send_whatsapp_audio(phone_number_id, recipient_number, audio_link):
         print(f"📤 [WA audio] status={response.status_code}")
         print(f"📤 [WA audio] body={safe_response_text(response)}")
         if response.status_code == 200:
-            print("✅ [WA audio] 成功回傳語音給使用者！")
+            print("✅ 成功回傳語音給使用者！")
         else:
-            print(f"❌ [WA audio] 語音回傳失敗，錯誤碼：{response.status_code}")
+            print(f"❌ 語音回傳失敗，錯誤碼：{response.status_code}")
     except Exception as e:
-        print(f"❌ [WA audio] 發送過程發生異常: {e}")
-        traceback.print_exc()
+        print(f"❌ [WA audio] 發送失敗: {e}")
 
 
 # ==========================================
 # ⚙️ 專門負責耗時工作的背景處理器
 # ==========================================
 def background_processor(value):
-    try:
-        phone_number_id = value.get("metadata", {}).get("phone_number_id")
-        print(f"🧵 [background] 開始執行背景任務, phone_number_id={phone_number_id}")
+    phone_number_id = value.get("metadata", {}).get("phone_number_id")
+    print(f"🧵 [background] phone_number_id={phone_number_id}")
 
-        if "messages" in value:
-            for message in value["messages"]:
-                from_number = message.get("from")
-                msg_type = message.get("type")
-                print(f"🧵 [background] from={from_number}, type={msg_type}")
+    if "messages" in value:
+        for message in value["messages"]:
+            from_number = message.get("from")
+            msg_type = message.get("type")
+            print(f"🧵 [background] from={from_number}, type={msg_type}")
 
+            try:
                 # --------------------------
                 # 💬 處理純文字
                 # --------------------------
@@ -459,10 +436,9 @@ def background_processor(value):
                             send_whatsapp_audio(phone_number_id, from_number, audio_url)
                 else:
                     print(f"ℹ️ 尚未處理的訊息類型: {msg_type}")
-                    
-    except Exception as e:
-        print(f"❌ [background] 背景處理發生嚴重錯誤: {e}")
-        traceback.print_exc()
+
+            except Exception as e:
+                print(f"❌ 背景處理發生錯誤: {e}")
 
 
 # ==========================================
@@ -500,7 +476,7 @@ def webhook():
 
     elif request.method == "POST":
         data = request.get_json(silent=True) or {}
-        print(f"📨 [webhook] 收到 Meta POST 請求，準備交由背景執行...")
+        print(f"📨 [webhook] 收到 POST: {data}")
 
         try:
             if data.get("object") == "whatsapp_business_account":
@@ -508,7 +484,6 @@ def webhook():
                     for change in entry.get("changes", []):
                         value = change.get("value", {})
 
-                        # 將處理工作丟到背景執行緒，讓 Webhook 能立刻回傳 200 給 Meta
                         thread = threading.Thread(target=background_processor, args=(value,))
                         thread.start()
             else:
@@ -516,7 +491,6 @@ def webhook():
 
         except Exception as e:
             print(f"❌ 接收訊息錯誤: {e}")
-            traceback.print_exc()
 
         return jsonify({"status": "ok"}), 200
 

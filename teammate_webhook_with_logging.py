@@ -4,6 +4,17 @@ import requests
 import base64
 import threading
 import hashlib
+import builtins
+import traceback
+
+# ==========================================
+# 🔧 系統優化：強制讓所有 print 立刻推送到 Render 日誌
+# ==========================================
+_original_print = builtins.print
+def print(*args, **kwargs):
+    kwargs["flush"] = True
+    _original_print(*args, **kwargs)
+builtins.print = print
 
 app = Flask(__name__)
 
@@ -65,21 +76,37 @@ def process_with_hermes(input_text, chat_id=None):
             json=payload,
             timeout=REQUEST_TIMEOUT,
         )
-
+        
+        # 取得 HERMES 回傳的原始文字
+        raw_body = safe_response_text(response)
         print(f"🧾 [HERMES] status={response.status_code}")
-        print(f"🧾 [HERMES] body={safe_response_text(response)}")
+        print(f"🧾 [HERMES] body={raw_body}")
 
         if response.status_code == 200:
             data = response.json()
-            reply_text = data.get("reply_text") or data.get("message") or "抱歉，無法解析 HERMES 回傳的文字。"
+            reply_text = data.get("reply_text") or data.get("message")
+            
+            # 如果 HERMES 雖然回傳 200，但內容是空白的，把原始結果印在 WhatsApp 方便除錯
+            if not reply_text:
+                error_msg = (
+                    "⚠️ 收到 HERMES 空白回覆\n"
+                    f"👉 HERMES 原始資料：\n{raw_body}"
+                )
+                return error_msg, None
+                
             audio_url = data.get("audio_url")
             return reply_text, audio_url
 
-        return f"❌ HERMES 連線錯誤 (狀態碼: {response.status_code})", None
+        # 如果發生 500 等錯誤，直接把錯誤碼跟原始資料丟到 WhatsApp
+        error_msg = (
+            f"❌ HERMES 連線錯誤 (狀態碼: {response.status_code})\n"
+            f"👉 錯誤內容：\n{raw_body}"
+        )
+        return error_msg, None
 
     except requests.exceptions.Timeout:
         print("❌ [HERMES] 請求逾時")
-        return "❌ 呼叫 HERMES 逾時", None
+        return "❌ 呼叫 HERMES 逾時 (已超過等待時間)", None
     except Exception as e:
         print(f"❌ [HERMES] 呼叫異常: {e}")
         return f"❌ 呼叫 HERMES 發生異常: {e}", None
@@ -128,7 +155,7 @@ def identify_plant_with_plantid(image_bytes):
     last_status_code = None
     last_error_code = "unknown"
 
-    # 優先走 Twilio 目前在用的 v3 介面
+    # 優先走 v3 介面
     v3_url = "https://plant.id/api/v3/identification"
     v3_headers = {
         "Api-Key": PLANT_ID_API_KEY,
@@ -439,6 +466,7 @@ def background_processor(value):
 
             except Exception as e:
                 print(f"❌ 背景處理發生錯誤: {e}")
+                traceback.print_exc()
 
 
 # ==========================================
@@ -491,6 +519,7 @@ def webhook():
 
         except Exception as e:
             print(f"❌ 接收訊息錯誤: {e}")
+            traceback.print_exc()
 
         return jsonify({"status": "ok"}), 200
 

@@ -119,7 +119,30 @@ def build_glasses_readout_text(reply_text):
         summary = summary[:117].rstrip() + "..."
     return summary
 
-
+# ==========================================
+# 🧪 臨時測試路由：不需要植物辨識即可直接測試 TTS
+# ==========================================
+@app.route("/test-tts", methods=["GET"])
+def test_tts():
+    # 帶入範例資料進行測試
+    test_plant = "龍葵"
+    test_amis = "tatukem"
+    test_efficacy = "嫩葉可作為野菜煮湯，具有清熱解毒的功效。"
+    
+    # 呼叫剛剛寫好的雙語 TTS 函數
+    audio_url = generate_bilingual_tts_audio(test_plant, test_amis, test_efficacy)
+    
+    if audio_url:
+        return jsonify({
+            "success": True,
+            "message": "TTS 語音生成成功！請點擊 audio_url 聆聽",
+            "audio_url": audio_url
+        }), 200
+    else:
+        return jsonify({
+            "success": False,
+            "error": "TTS 語音生成失敗，請檢查 Render 日誌"
+        }), 500
 # ==========================================
 # 🎵 雙語優化 TTS 語音生成模組 (Edge-TTS 雙引擎拼接)
 # ==========================================

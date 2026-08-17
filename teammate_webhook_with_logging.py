@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 import os
 import re
 import requests
@@ -7,6 +7,10 @@ import threading
 import hashlib
 import builtins
 import traceback
+import asyncio
+import uuid
+from pathlib import Path
+import edge_tts
 
 # ==========================================
 # 🔧 系統優化：強制讓所有 print 立刻推送到 Render 日誌
@@ -18,6 +22,18 @@ def print(*args, **kwargs):
 builtins.print = print
 
 app = Flask(__name__)
+
+# ==========================================
+# 📁 語音檔案儲存路徑與靜態目錄設定
+# ==========================================
+BASE_DIR = Path(__file__).resolve().parent
+AUDIO_DIR = BASE_DIR / "static" / "audio"
+AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+
+# 掛載靜態資料夾，讓 Render 可以直接透過網址提供生成的 mp3 檔案下載
+@app.route('/static/audio/<path:filename>')
+def serve_audio(filename):
+    return send_from_directory(str(AUDIO_DIR), filename)
 
 # ==========================================
 # 🔐 環境變數設定區
@@ -102,6 +118,68 @@ def build_glasses_readout_text(reply_text):
     if len(summary) > 120:
         summary = summary[:117].rstrip() + "..."
     return summary
+
+
+# ==========================================
+# 🎵 雙語優化 TTS 語音生成模組 (Edge-TTS 雙引擎拼接)
+# ==========================================
+def _asyncio_run(coro):
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            # 若在執行緒中已有事件循環，建立 task
+            return asyncio.run_coroutine_threadsafe(coro, loop).result()
+        else:
+            return loop.run_until_complete(coro)
+    except RuntimeError:
+        return asyncio.run(coro)
+
+def generate_bilingual_tts_audio(plant_name, amis_name, efficacy):
+    print(f"🎵 [TTS] 開始生成雙語語音: plant={plant_name}, amis={amis_name}")
+    try:
+        output_filename = f"audio_{amis_name}_{uuid.uuid4().hex[:6]}.mp3"
+        output_path = AUDIO_DIR / output_filename
+        
+        part1_file = AUDIO_DIR / f"part1_{uuid.uuid4().hex[:4]}.mp3"
+        part2_file = AUDIO_DIR / f"part2_{uuid.uuid4().hex[:4]}.mp3"
+        part3_file = AUDIO_DIR / f"part3_{uuid.uuid4().hex[:4]}.mp3"
+
+        async def synthesize_parts():
+            # 1. 第一段：中文解說 (台灣中文女聲)
+            text_part1 = f"辨識結果為：{plant_name}。海岸阿美族語稱為："
+            comm1 = edge_tts.Communicate(text_part1, "zh-TW-HsiaoChenNeural", rate="-5%")
+            await comm1.save(str(part1_file))
+
+            # 2. 第二段：阿美族語羅馬拼音 (印尼語引擎，完美對應母音發音)
+            comm2 = edge_tts.Communicate(amis_name, "id-ID-GadisNeural", rate="-15%")
+            await comm2.save(str(part2_file))
+
+            # 3. 第三段：功效解說 (台灣中文女聲)
+            text_part3 = f"。功效與介紹為：{efficacy}。"
+            comm3 = edge_tts.Communicate(text_part3, "zh-TW-HsiaoChenNeural", rate="-5%")
+            await comm3.save(str(part3_file))
+
+        # 執行非同步語音生成
+        _asyncio_run(synthesize_parts())
+
+        # 4. 將三段語音合併為一個 MP3 檔
+        with open(output_path, "wb") as f_out:
+            for p_file in [part1_file, part2_file, part3_file]:
+                if p_file.exists():
+                    with open(p_file, "rb") as f_in:
+                        f_out.write(f_in.read())
+                    p_file.unlink() # 清理暫存檔
+
+        # 自動抓取 Render 部署後的外部網址 (如果在地端則退回 localhost)
+        base_url = os.getenv("RENDER_EXTERNAL_URL", "http://127.0.0.1:10000")
+        audio_url = f"{base_url}/static/audio/{output_filename}"
+        print(f"✅ [TTS] 語音合成成功，公開網址: {audio_url}")
+        return audio_url
+
+    except Exception as e:
+        print(f"❌ [TTS] 語音合成發生異常: {e}")
+        traceback.print_exc()
+        return None
 
 
 # ==========================================
@@ -211,7 +289,6 @@ def process_with_hermes(input_text, chat_id=None):
             timeout=HERMES_API_TIMEOUT,
         )
 
-        # 取得 HERMES 回傳的原始文字 (除錯用)
         raw_body = safe_response_text(response)
         print(f"🧾 [HERMES] status={response.status_code}")
         print(f"🧾 [HERMES] body={raw_body}")
@@ -220,7 +297,6 @@ def process_with_hermes(input_text, chat_id=None):
             data = response.json()
             reply_text = data.get("reply_text") or data.get("message")
             
-            # 如果 HERMES 雖然回傳 200，但內容是空白的，把原始結果印在 WhatsApp 方便除錯
             if not reply_text:
                 error_msg = (
                     "⚠️ 收到 HERMES 空白回覆\n"
@@ -228,10 +304,8 @@ def process_with_hermes(input_text, chat_id=None):
                 )
                 return error_msg, None
                 
-            audio_url = data.get("audio_url")
-            return reply_text, audio_url
+            return reply_text, None
 
-        # 如果發生 500 等錯誤，直接把錯誤碼跟原始資料丟到 WhatsApp
         error_msg = (
             f"❌ HERMES 連線錯誤 (狀態碼: {response.status_code})\n"
             f"👉 錯誤內容：\n{raw_body}"
@@ -294,7 +368,6 @@ def identify_plant_with_plantid(image_bytes):
     last_status_code = None
     last_error_code = "unknown"
 
-    # 優先走 Twilio 目前在用的 v3 介面
     v3_url = "https://plant.id/api/v3/identification"
     v3_headers = {
         "Api-Key": PLANT_ID_API_KEY,
@@ -334,7 +407,6 @@ def identify_plant_with_plantid(image_bytes):
         print(f"❌ [Plant.id v3] 辨識失敗: {e}")
         last_error_code = "exception"
 
-    # v3 若失敗，再 fallback 舊版 v2
     v2_url = "https://api.plant.id/v2/identify"
     v2_headers = {
         "Api-Key": PLANT_ID_API_KEY,
@@ -491,12 +563,10 @@ def background_processor(value):
                     text = message.get("text", {}).get("body", "")
                     print(f"💬 收到文字訊息: {text}")
 
-                    reply_text, audio_url = process_with_hermes(text, from_number)
+                    reply_text, _ = process_with_hermes(text, from_number)
 
                     if phone_number_id and from_number:
                         send_whatsapp_reply(phone_number_id, from_number, reply_text)
-                        if audio_url:
-                            send_whatsapp_audio(phone_number_id, from_number, audio_url)
 
                 # --------------------------
                 # 📸 處理圖片
@@ -526,13 +596,40 @@ def background_processor(value):
                     print(f"🌿 [Plant.id] 辨識成功 source={source} plant_name={plant_name} probability={probability}")
 
                     prompt = f"照片辨識結果為：{plant_name}"
-                    reply_text, audio_url = process_with_hermes(prompt, from_number)
+                    reply_text, _ = process_with_hermes(prompt, from_number)
+
+                    # 從 Hermes 回覆中萃取老師要求的欄位（名稱、阿美族語名、補充/介紹）
+                    extracted_plant_name = (
+                        _extract_reply_field(reply_text, "中文名") 
+                        or _extract_reply_field(reply_text, "辨識結果") 
+                        or plant_name
+                    )
+                    extracted_amis_name = (
+                        _extract_reply_field(reply_text, "阿美族語名") 
+                        or _extract_reply_field(reply_text, "阿美語名") 
+                        or _extract_reply_field(reply_text, "阿美族語") 
+                        or "tatukem"
+                    )
+                    extracted_efficacy = (
+                        _extract_reply_field(reply_text, "補充") 
+                        or _extract_reply_field(reply_text, "介紹") 
+                        or "具有傳統民俗植物用途。"
+                    )
+
+                    # 呼叫我們自己寫的雙語優化 TTS 系統生成高質感語音！
+                    custom_audio_url = generate_bilingual_tts_audio(
+                        extracted_plant_name, 
+                        extracted_amis_name, 
+                        extracted_efficacy
+                    )
 
                     if phone_number_id and from_number:
                         send_whatsapp_glasses_readout(phone_number_id, from_number, reply_text)
                         send_whatsapp_reply(phone_number_id, from_number, reply_text)
-                        if audio_url:
-                            send_whatsapp_audio(phone_number_id, from_number, audio_url)
+                        
+                        # 發送我們優化後的 TTS 語音檔給 WhatsApp 用戶
+                        if custom_audio_url:
+                            send_whatsapp_audio(phone_number_id, from_number, custom_audio_url)
                 else:
                     print(f"ℹ️ 尚未處理的訊息類型: {msg_type}")
 
@@ -546,7 +643,7 @@ def background_processor(value):
 # ==========================================
 @app.route("/")
 def home():
-    return "Amis Bot Webhook is running perfectly! (Async Mode Connected to HERMES)"
+    return "Amis Bot Webhook is running perfectly! (With Custom Bilingual TTS)"
 
 
 @app.route("/health")

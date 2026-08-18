@@ -579,13 +579,33 @@ def background_processor(value):
             print(f"🧵 [background] from={from_number}, type={msg_type}")
 
             try:
-                # --------------------------
+               # --------------------------
                 # 💬 處理純文字
                 # --------------------------
                 if msg_type == "text":
                     text = message.get("text", {}).get("body", "")
                     print(f"💬 收到文字訊息: {text}")
 
+                    # --- 臨時新增的 WhatsApp 語音測試指令 ---
+                    if text.strip() == "測試語音":
+                        test_plant = "龍葵"
+                        test_amis = "tatukem"
+                        test_efficacy = "嫩葉可作為野菜煮湯，具有清熱解毒的功效。"
+                        
+                        if phone_number_id and from_number:
+                            send_whatsapp_reply(phone_number_id, from_number, f"收到測試指令！正在為您生成「{test_plant}」的雙語語音...")
+                            
+                            # 呼叫 TTS
+                            custom_audio_url = generate_bilingual_tts_audio(test_plant, test_amis, test_efficacy)
+                            
+                            if custom_audio_url:
+                                send_whatsapp_audio(phone_number_id, from_number, custom_audio_url)
+                            else:
+                                send_whatsapp_reply(phone_number_id, from_number, "❌ 語音生成失敗，請檢查伺服器狀態。")
+                        continue  # 提早結束，不去呼叫還沒建置好的 Hermes 資料庫
+                    # ------------------------------------
+
+                    # 原本的對話邏輯 (若之後資料庫弄好才會用到)
                     reply_text, _ = process_with_hermes(text, from_number)
 
                     if phone_number_id and from_number:

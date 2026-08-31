@@ -1,8 +1,5 @@
-Flask>=3.1,<4.0
-gunicorn>=23.0,<24.0
-requests>=2.32,<3.0
-edge-tts>=6.1.9
-fastapi
-uvicorn
-pymysql
-ollama
+import os
+import requests
+import pymysql
+from fastapi import FastAPI, Request, Response, HTTPException, BackgroundTasks
+import ollama

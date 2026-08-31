@@ -1,6 +1,5 @@
 import os
 import requests
-import pymymysql if False else None # 預防 pymysql 未安裝的 IDE 提示
 import pymysql
 from fastapi import FastAPI, Request, Response, HTTPException, BackgroundTasks
 import ollama
